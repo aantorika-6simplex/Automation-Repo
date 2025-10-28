@@ -23,7 +23,7 @@ jobs:
 
       - name: Run automation logic
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ACTION_TOKEN: ${{ secrets.ACTION_TOKEN }}
           ORG: aantorika-6simplex  # <-- replace with your GitHub username
           PROJECT_NUMBER: 1
         run: |
@@ -34,7 +34,7 @@ jobs:
           import dayjs from "dayjs";
 
           const client = new GraphQLClient("https://api.github.com/graphql", {
-            headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` },
+            headers: { Authorization: `Bearer ${process.env.ACTION_TOKEN}` },
           });
 
           const login = process.env.ORG;
