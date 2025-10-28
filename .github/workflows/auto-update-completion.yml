@@ -2,7 +2,7 @@ name: Auto-update completion status based on due date
 
 on:
   schedule:
-    - cron: "0 3 * * *"  # runs daily at 3 AM UTC
+    - cron: "0 3 * * *" # runs daily at 3 AM UTC
   workflow_dispatch:
 
 permissions:
@@ -43,9 +43,9 @@ jobs:
 
           // === PROJECT FIELD CONSTANTS ===
           const projectId = "PVT_kwHODWXJGc4BGnXt";
-          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw"; // Single select field
-          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";       // Number field (not Date)
-          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";       // Number field (not Date)
+          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw";
+          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";  // may be Date or Number
+          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";  // may be Date or Number
 
           const completionMap = {
             "On Due Date": "a4b55684",
@@ -65,11 +65,15 @@ jobs:
                       fieldValues(first: 20) {
                         nodes {
                           ... on ProjectV2ItemFieldDateValue {
-                            field { ... on ProjectV2FieldCommon { name } }
+                            field { ... on ProjectV2FieldCommon { name id } }
                             date
                           }
+                          ... on ProjectV2ItemFieldNumberValue {
+                            field { ... on ProjectV2FieldCommon { name id } }
+                            number
+                          }
                           ... on ProjectV2ItemFieldSingleSelectValue {
-                            field { ... on ProjectV2FieldCommon { name } }
+                            field { ... on ProjectV2FieldCommon { name id } }
                             name
                           }
                         }
@@ -77,6 +81,16 @@ jobs:
                     }
                   }
                 }
+              }
+            }
+          `;
+
+          const UPDATE_FIELD = gql`
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+              updateProjectV2ItemFieldValue(
+                input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: $value }
+              ) {
+                projectV2Item { id }
               }
             }
           `;
@@ -96,21 +110,6 @@ jobs:
             }
           `;
 
-          const UPDATE_NUMBER = gql`
-            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
-              updateProjectV2ItemFieldValue(
-                input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                  value: { number: $value }
-                }
-              ) {
-                projectV2Item { id }
-              }
-            }
-          `;
-
           // === MAIN LOGIC ===
           (async () => {
             try {
@@ -119,7 +118,7 @@ jobs:
               const items = project.items.nodes;
               const today = dayjs();
 
-              console.log(` Found ${items.length} project items`);
+              console.log(`Found ${items.length} project items`);
 
               for (const item of items) {
                 let status = "";
@@ -149,7 +148,7 @@ jobs:
 
                 console.log(`Updating ${item.id}: ${completionStatus}`);
 
-                // Update "Completion Status"
+                // Update Completion Status
                 await client.request(UPDATE_COMPLETION, {
                   projectId,
                   itemId: item.id,
@@ -157,24 +156,32 @@ jobs:
                   optionId: completionMap[completionStatus],
                 });
 
-                // Update "Days Delayed" (number field)
+                // Helper to update number/date field dynamically
+                const updateFieldValue = async (fieldId, value, label) => {
+                  try {
+                    const isDateField = value instanceof Date || typeof value === "string" && value.includes("-");
+                    const formattedValue = isDateField ? { date: value } : { number: value };
+
+                    await client.request(UPDATE_FIELD, {
+                      projectId,
+                      itemId: item.id,
+                      fieldId,
+                      value: formattedValue,
+                    });
+                    console.log(`Updated ${label} (${fieldId}) → ${JSON.stringify(formattedValue)}`);
+                  } catch (err) {
+                    console.error(`Failed to update ${label}:`, err.response?.errors || err.message);
+                  }
+                };
+
+                //  Update Days Delayed
                 if (daysDelayed > 0) {
-                  await client.request(UPDATE_NUMBER, {
-                    projectId,
-                    itemId: item.id,
-                    fieldId: daysDelayedFieldId,
-                    value: daysDelayed,
-                  });
+                  await updateFieldValue(daysDelayedFieldId, daysDelayed, "Days Delayed");
                 }
 
-                // Update "Days Before" (number field)
+                //  Update Days Before
                 if (daysBefore > 0) {
-                  await client.request(UPDATE_NUMBER, {
-                    projectId,
-                    itemId: item.id,
-                    fieldId: daysBeforeFieldId,
-                    value: daysBefore,
-                  });
+                  await updateFieldValue(daysBeforeFieldId, daysBefore, "Days Before");
                 }
               }
 
