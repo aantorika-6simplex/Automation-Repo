@@ -119,7 +119,7 @@ jobs:
               const items = project.items.nodes;
               const today = dayjs();
 
-              console.log(`📋 Found ${items.length} project items`);
+              console.log(` Found ${items.length} project items`);
 
               for (const item of items) {
                 let status = "";
