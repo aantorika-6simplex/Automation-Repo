@@ -43,9 +43,9 @@ jobs:
 
           // === PROJECT FIELD CONSTANTS ===
           const projectId = "PVT_kwHODWXJGc4BGnXt";
-          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw";
-          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";  // may be Date or Number
-          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";  // may be Date or Number
+          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw"; // Completion Status
+          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";       // Days Delayed (Number)
+          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";        // Days Before (Number)
 
           const completionMap = {
             "On Due Date": "a4b55684",
@@ -65,15 +65,15 @@ jobs:
                       fieldValues(first: 20) {
                         nodes {
                           ... on ProjectV2ItemFieldDateValue {
-                            field { ... on ProjectV2FieldCommon { name id } }
+                            field { name id }
                             date
                           }
                           ... on ProjectV2ItemFieldNumberValue {
-                            field { ... on ProjectV2FieldCommon { name id } }
+                            field { name id }
                             number
                           }
                           ... on ProjectV2ItemFieldSingleSelectValue {
-                            field { ... on ProjectV2FieldCommon { name id } }
+                            field { name id }
                             name
                           }
                         }
@@ -116,7 +116,7 @@ jobs:
               const data = await client.request(GET_ITEMS, { login, number: projectNumber });
               const project = data.user.projectV2;
               const items = project.items.nodes;
-              const today = dayjs();
+              const today = dayjs().startOf("day");
 
               console.log(`Found ${items.length} project items`);
 
@@ -131,15 +131,15 @@ jobs:
 
                 if (!dueDate || status !== "Done") continue;
 
-                const due = dayjs(dueDate);
+                const due = dayjs(dueDate).startOf("day");
                 let completionStatus = "";
                 let daysDelayed = 0;
                 let daysBefore = 0;
 
-                if (today.isAfter(due, "day")) {
+                if (today.isAfter(due)) {
                   daysDelayed = today.diff(due, "day");
                   completionStatus = "Delayed";
-                } else if (today.isSame(due, "day")) {
+                } else if (today.isSame(due)) {
                   completionStatus = "On Due Date";
                 } else {
                   daysBefore = due.diff(today, "day");
@@ -148,46 +148,50 @@ jobs:
 
                 console.log(`Updating ${item.id}: ${completionStatus}`);
 
-                // Update Completion Status
-                await client.request(UPDATE_COMPLETION, {
-                  projectId,
-                  itemId: item.id,
-                  fieldId: completionStatusFieldId,
-                  optionId: completionMap[completionStatus],
-                });
+                // === Update Completion Status ===
+                try {
+                  await client.request(UPDATE_COMPLETION, {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: completionStatusFieldId,
+                    optionId: completionMap[completionStatus],
+                  });
+                  console.log(`Completion Status set to "${completionStatus}"`);
+                } catch (err) {
+                  console.error(`Failed to update Completion Status:`, err.response?.errors || err.message);
+                }
 
-                // Helper to update number/date field dynamically
-                const updateFieldValue = async (fieldId, value, label) => {
+                // === Update numeric fields ===
+                const updateNumberField = async (fieldId, numberValue, label) => {
                   try {
-                    const isDateField = value instanceof Date || typeof value === "string" && value.includes("-");
-                    const formattedValue = isDateField ? { date: value } : { number: value };
-
                     await client.request(UPDATE_FIELD, {
                       projectId,
                       itemId: item.id,
                       fieldId,
-                      value: formattedValue,
+                      value: { number: numberValue },
                     });
-                    console.log(`Updated ${label} (${fieldId}) → ${JSON.stringify(formattedValue)}`);
+                    console.log(`Updated ${label}: ${numberValue}`);
                   } catch (err) {
                     console.error(`Failed to update ${label}:`, err.response?.errors || err.message);
                   }
                 };
 
-                //  Update Days Delayed
                 if (daysDelayed > 0) {
-                  await updateFieldValue(daysDelayedFieldId, daysDelayed, "Days Delayed");
+                  await updateNumberField(daysDelayedFieldId, daysDelayed, "Days Delayed");
+                } else {
+                  await updateNumberField(daysDelayedFieldId, 0, "Days Delayed");
                 }
 
-                //  Update Days Before
                 if (daysBefore > 0) {
-                  await updateFieldValue(daysBeforeFieldId, daysBefore, "Days Before");
+                  await updateNumberField(daysBeforeFieldId, daysBefore, "Days Before");
+                } else {
+                  await updateNumberField(daysBeforeFieldId, 0, "Days Before");
                 }
               }
 
-              console.log(" All project items updated successfully!");
+              console.log("All project items processed successfully!");
             } catch (err) {
-              console.error(" Error during execution:", err);
+              console.error("Error during execution:", err);
               process.exit(1);
             }
           })();
