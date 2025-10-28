@@ -37,7 +37,6 @@ jobs:
           const login = process.env.ORG;
           const projectNumber = process.env.PROJECT_NUMBER;
 
-          // ✅ FIXED QUERY (handles unions correctly)
           const query = gql`
             query($login: String!, $number: Int!) {
               user(login: $login) {
@@ -130,7 +129,7 @@ jobs:
                     completionStatus = "Before Due Date";
                   }
 
-                  console.log(`🟢 Updating ${item.id}: ${completionStatus}`);
+                  console.log(` Updating ${item.id}: ${completionStatus}`);
 
                   await client.request(mutation, {
                     projectId,
@@ -157,7 +156,7 @@ jobs:
                 }
               }
             } catch (error) {
-              console.error("❌ GraphQL Error:", error);
+              console.error("GraphQL Error:", error);
               process.exit(1);
             }
           })();
