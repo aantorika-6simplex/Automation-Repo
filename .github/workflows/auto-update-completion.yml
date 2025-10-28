@@ -2,7 +2,7 @@ name: Auto-update completion status based on due date
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * *"  # runs daily at 3 AM UTC
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - name: Run automation logic
         env:
           ACTION_TOKEN: ${{ secrets.ACTION_TOKEN }}
-          ORG: aantorika-6simplex   # Replace with your GitHub username
+          ORG: aantorika-6simplex     # your GitHub username
           PROJECT_NUMBER: 1
         run: |
           npm install graphql-request dayjs
@@ -47,24 +47,8 @@ jobs:
                       id
                       fieldValues(first: 20) {
                         nodes {
-                          ... on ProjectV2ItemFieldDateValue {
-                            field {
-                              ... on ProjectV2FieldCommon { name }
-                            }
-                            date
-                          }
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            field {
-                              ... on ProjectV2FieldCommon { name }
-                            }
-                            name
-                          }
-                          ... on ProjectV2ItemFieldTextValue {
-                            field {
-                              ... on ProjectV2FieldCommon { name }
-                            }
-                            text
-                          }
+                          ... on ProjectV2ItemFieldDateValue { field { name } date }
+                          ... on ProjectV2ItemFieldSingleSelectValue { field { name } name }
                         }
                       }
                     }
@@ -81,7 +65,7 @@ jobs:
                   projectId: $projectId
                   itemId: $itemId
                   fieldId: $fieldId
-                  value: { text: $value }
+                  value: { singleSelectOptionId: $value }
                 }
               ) {
                 projectV2Item { id }
@@ -89,75 +73,99 @@ jobs:
             }
           `;
 
-          // ⚙️ Replace these IDs with your actual project and field IDs
-          const projectId = "PVT_kwHODWXJGc4BGnXt";  // Project ID
+          const projectId = "PVT_kwHODWXJGc4BGnXt";
           const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw";
           const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";
           const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";
 
+          // Map single-select option IDs
+          const completionMap = {
+            "On Due Date": "a4b55684",
+            "Before Due Date": "739f8394",
+            "Delayed": "23e776a7"
+          };
+
           (async () => {
-            try {
-              const data = await client.request(query, {
-                login,
-                number: parseInt(projectNumber),
-              });
+            const data = await client.request(query, { login, number: parseInt(projectNumber) });
+            const project = data.user.projectV2;
+            const items = project.items.nodes;
+            const today = dayjs();
 
-              const project = data.user.projectV2;
-              const items = project.items.nodes;
-              const today = dayjs();
+            for (const item of items) {
+              let status = "", dueDate = "";
+              for (const field of item.fieldValues.nodes) {
+                if (field.field?.name === "Status") status = field.name;
+                if (field.field?.name === "Due Date") dueDate = field.date;
+              }
 
-              for (const item of items) {
-                let status = "", dueDate = "";
-                for (const field of item.fieldValues.nodes) {
-                  if (field.field?.name === "Status") status = field.name;
-                  if (field.field?.name === "Due Date") dueDate = field.date;
+              if (status === "Done" && dueDate) {
+                const due = dayjs(dueDate);
+                let completionStatus = "";
+                let daysDelayed = 0;
+                let daysBefore = 0;
+
+                if (today.isAfter(due)) {
+                  daysDelayed = today.diff(due, "day");
+                  completionStatus = "Delayed";
+                } else if (today.isSame(due, "day")) {
+                  completionStatus = "On Due Date";
+                } else {
+                  daysBefore = due.diff(today, "day");
+                  completionStatus = "Before Due Date";
                 }
 
-                if (status === "Done" && dueDate) {
-                  const due = dayjs(dueDate);
-                  let completionStatus = "";
-                  let daysDelayed = 0;
-                  let daysBefore = 0;
+                console.log(`Updating ${item.id}: ${completionStatus}`);
 
-                  if (today.isAfter(due)) {
-                    daysDelayed = today.diff(due, "day");
-                    completionStatus = "Delayed";
-                  } else if (today.isSame(due, "day")) {
-                    completionStatus = "On Due Date";
-                  } else {
-                    daysBefore = due.diff(today, "day");
-                    completionStatus = "Before Due Date";
-                  }
+                await client.request(mutation, {
+                  projectId,
+                  itemId: item.id,
+                  fieldId: completionStatusFieldId,
+                  value: completionMap[completionStatus],
+                });
 
-                  console.log(` Updating ${item.id}: ${completionStatus}`);
-
-                  await client.request(mutation, {
+                // Optional: update Days Delayed or Days Before
+                if (daysDelayed > 0) {
+                  const numMutation = gql`
+                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
+                      updateProjectV2ItemFieldValue(
+                        input: {
+                          projectId: $projectId
+                          itemId: $itemId
+                          fieldId: $fieldId
+                          value: { number: $value }
+                        }
+                      ) { projectV2Item { id } }
+                    }
+                  `;
+                  await client.request(numMutation, {
                     projectId,
                     itemId: item.id,
-                    fieldId: completionStatusFieldId,
-                    value: completionStatus,
+                    fieldId: daysDelayedFieldId,
+                    value: daysDelayed,
                   });
+                }
 
-                  if (daysDelayed > 0)
-                    await client.request(mutation, {
-                      projectId,
-                      itemId: item.id,
-                      fieldId: daysDelayedFieldId,
-                      value: String(daysDelayed),
-                    });
-
-                  if (daysBefore > 0)
-                    await client.request(mutation, {
-                      projectId,
-                      itemId: item.id,
-                      fieldId: daysBeforeFieldId,
-                      value: String(daysBefore),
-                    });
+                if (daysBefore > 0) {
+                  const numMutation = gql`
+                    mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
+                      updateProjectV2ItemFieldValue(
+                        input: {
+                          projectId: $projectId
+                          itemId: $itemId
+                          fieldId: $fieldId
+                          value: { number: $value }
+                        }
+                      ) { projectV2Item { id } }
+                    }
+                  `;
+                  await client.request(numMutation, {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: daysBeforeFieldId,
+                    value: daysBefore,
+                  });
                 }
               }
-            } catch (error) {
-              console.error("GraphQL Error:", error);
-              process.exit(1);
             }
           })();
           EOF
