@@ -1,0 +1,142 @@
+name: Auto-update completion status based on due date
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  projects: write
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run automation logic
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ORG: aantorika-6simplex  # <-- replace with your GitHub username
+          PROJECT_NUMBER: 1
+        run: |
+          npm install graphql-request dayjs
+
+          cat <<'EOF' > script.js
+          import { GraphQLClient, gql } from "graphql-request";
+          import dayjs from "dayjs";
+
+          const client = new GraphQLClient("https://api.github.com/graphql", {
+            headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` },
+          });
+
+          const login = process.env.ORG;
+          const projectNumber = process.env.PROJECT_NUMBER;
+
+          const query = gql`
+            query($login: String!, $number: Int!) {
+              user(login: $login) {
+                projectV2(number: $number) {
+                  id
+                  items(first: 100) {
+                    nodes {
+                      id
+                      fieldValues(first: 20) {
+                        nodes {
+                          ... on ProjectV2ItemFieldDateValue { field { name } date }
+                          ... on ProjectV2ItemFieldSingleSelectValue { field { name } name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          `;
+
+          const mutation = gql`
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+              updateProjectV2ItemFieldValue(
+                input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { text: $value }
+                }
+              ) {
+                projectV2Item { id }
+              }
+            }
+          `;
+
+          const projectId = "PVT_kwHODWXJGc4BGnXt";
+          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw";
+          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";
+          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";
+
+          (async () => {
+            const data = await client.request(query, { login, number: parseInt(projectNumber) });
+            const project = data.user.projectV2;
+            const items = project.items.nodes;
+            const today = dayjs();
+
+            for (const item of items) {
+              let status = "", dueDate = "";
+              for (const field of item.fieldValues.nodes) {
+                if (field.field?.name === "Status") status = field.name;
+                if (field.field?.name === "Due Date") dueDate = field.date;
+              }
+
+              if (status === "Done" && dueDate) {
+                const due = dayjs(dueDate);
+                let completionStatus = "";
+                let daysDelayed = 0;
+                let daysBefore = 0;
+
+                if (today.isAfter(due)) {
+                  daysDelayed = today.diff(due, "day");
+                  completionStatus = "Delayed";
+                } else if (today.isSame(due, "day")) {
+                  completionStatus = "On Due Date";
+                } else {
+                  daysBefore = due.diff(today, "day");
+                  completionStatus = "Before Due Date";
+                }
+
+                console.log(`Updating ${item.id}: ${completionStatus}`);
+
+                await client.request(mutation, {
+                  projectId,
+                  itemId: item.id,
+                  fieldId: completionStatusFieldId,
+                  value: completionStatus,
+                });
+
+                if (daysDelayed > 0)
+                  await client.request(mutation, {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: daysDelayedFieldId,
+                    value: String(daysDelayed),
+                  });
+
+                if (daysBefore > 0)
+                  await client.request(mutation, {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: daysBeforeFieldId,
+                    value: String(daysBefore),
+                  });
+              }
+            }
+          })();
+          EOF
+
+          node script.js
