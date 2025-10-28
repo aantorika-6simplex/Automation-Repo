@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,14 +33,28 @@ jobs:
           import { GraphQLClient, gql } from "graphql-request";
           import dayjs from "dayjs";
 
+          // === CONFIGURATION ===
           const client = new GraphQLClient("https://api.github.com/graphql", {
             headers: { Authorization: `Bearer ${process.env.ACTION_TOKEN}` },
           });
 
           const login = process.env.ORG;
-          const projectNumber = process.env.PROJECT_NUMBER;
+          const projectNumber = parseInt(process.env.PROJECT_NUMBER);
 
-          const query = gql`
+          // === PROJECT FIELD CONSTANTS ===
+          const projectId = "PVT_kwHODWXJGc4BGnXt";
+          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw"; // Single select field
+          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";       // Number field (not Date)
+          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";       // Number field (not Date)
+
+          const completionMap = {
+            "On Due Date": "a4b55684",
+            "Before Due Date": "739f8394",
+            "Delayed": "23e776a7"
+          };
+
+          // === QUERIES ===
+          const GET_ITEMS = gql`
             query($login: String!, $number: Int!) {
               user(login: $login) {
                 projectV2(number: $number) {
@@ -48,19 +65,11 @@ jobs:
                       fieldValues(first: 20) {
                         nodes {
                           ... on ProjectV2ItemFieldDateValue {
-                            field {
-                              ... on ProjectV2FieldCommon {
-                                name
-                              }
-                            }
+                            field { ... on ProjectV2FieldCommon { name } }
                             date
                           }
                           ... on ProjectV2ItemFieldSingleSelectValue {
-                            field {
-                              ... on ProjectV2FieldCommon {
-                                name
-                              }
-                            }
+                            field { ... on ProjectV2FieldCommon { name } }
                             name
                           }
                         }
@@ -72,15 +81,14 @@ jobs:
             }
           `;
 
-          // Mutation for single-select updates
-          const mutation = gql`
-            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+          const UPDATE_COMPLETION = gql`
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
               updateProjectV2ItemFieldValue(
                 input: {
                   projectId: $projectId
                   itemId: $itemId
                   fieldId: $fieldId
-                  value: { singleSelectOptionId: $value }
+                  value: { singleSelectOptionId: $optionId }
                 }
               ) {
                 projectV2Item { id }
@@ -88,8 +96,7 @@ jobs:
             }
           `;
 
-          // Mutation for numeric updates (Days Before / Delayed)
-          const numMutation = gql`
+          const UPDATE_NUMBER = gql`
             mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
               updateProjectV2ItemFieldValue(
                 input: {
@@ -104,87 +111,76 @@ jobs:
             }
           `;
 
-          // Project & Field IDs
-          const projectId = "PVT_kwHODWXJGc4BGnXt";
-          const completionStatusFieldId = "PVTSSF_lAHODWXJGc4BGnXtzg3nBFw";
-          const daysDelayedFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nA9E";
-          const daysBeforeFieldId = "PVTF_lAHODWXJGc4BGnXtzg3nFlU";
-
-          // Map Completion Status options
-          const completionMap = {
-            "On Due Date": "a4b55684",
-            "Before Due Date": "739f8394",
-            "Delayed": "23e776a7"
-          };
-
+          // === MAIN LOGIC ===
           (async () => {
             try {
-              const data = await client.request(query, { login, number: parseInt(projectNumber) });
+              const data = await client.request(GET_ITEMS, { login, number: projectNumber });
               const project = data.user.projectV2;
               const items = project.items.nodes;
               const today = dayjs();
 
-              console.log(`Found ${items.length} project items`);
+              console.log(`📋 Found ${items.length} project items`);
 
               for (const item of items) {
-                let status = "", dueDate = "";
+                let status = "";
+                let dueDate = "";
 
                 for (const field of item.fieldValues.nodes) {
                   if (field.field?.name === "Status") status = field.name;
                   if (field.field?.name === "Due Date") dueDate = field.date;
                 }
 
-                if (status === "Done" && dueDate) {
-                  const due = dayjs(dueDate);
-                  let completionStatus = "";
-                  let daysDelayed = 0;
-                  let daysBefore = 0;
+                if (!dueDate || status !== "Done") continue;
 
-                  if (today.isAfter(due)) {
-                    daysDelayed = today.diff(due, "day");
-                    completionStatus = "Delayed";
-                  } else if (today.isSame(due, "day")) {
-                    completionStatus = "On Due Date";
-                  } else {
-                    daysBefore = due.diff(today, "day");
-                    completionStatus = "Before Due Date";
-                  }
+                const due = dayjs(dueDate);
+                let completionStatus = "";
+                let daysDelayed = 0;
+                let daysBefore = 0;
 
-                  console.log(` Updating item ${item.id}: ${completionStatus}`);
+                if (today.isAfter(due, "day")) {
+                  daysDelayed = today.diff(due, "day");
+                  completionStatus = "Delayed";
+                } else if (today.isSame(due, "day")) {
+                  completionStatus = "On Due Date";
+                } else {
+                  daysBefore = due.diff(today, "day");
+                  completionStatus = "Before Due Date";
+                }
 
-                  // Update Completion Status
-                  await client.request(mutation, {
+                console.log(`Updating ${item.id}: ${completionStatus}`);
+
+                // Update "Completion Status"
+                await client.request(UPDATE_COMPLETION, {
+                  projectId,
+                  itemId: item.id,
+                  fieldId: completionStatusFieldId,
+                  optionId: completionMap[completionStatus],
+                });
+
+                // Update "Days Delayed" (number field)
+                if (daysDelayed > 0) {
+                  await client.request(UPDATE_NUMBER, {
                     projectId,
                     itemId: item.id,
-                    fieldId: completionStatusFieldId,
-                    value: completionMap[completionStatus],
+                    fieldId: daysDelayedFieldId,
+                    value: daysDelayed,
                   });
+                }
 
-                  // Update Days Delayed
-                  if (daysDelayed > 0) {
-                    await client.request(numMutation, {
-                      projectId,
-                      itemId: item.id,
-                      fieldId: daysDelayedFieldId,
-                      value: daysDelayed,
-                    });
-                  }
-
-                  // Update Days Before
-                  if (daysBefore > 0) {
-                    await client.request(numMutation, {
-                      projectId,
-                      itemId: item.id,
-                      fieldId: daysBeforeFieldId,
-                      value: daysBefore,
-                    });
-                  }
+                // Update "Days Before" (number field)
+                if (daysBefore > 0) {
+                  await client.request(UPDATE_NUMBER, {
+                    projectId,
+                    itemId: item.id,
+                    fieldId: daysBeforeFieldId,
+                    value: daysBefore,
+                  });
                 }
               }
 
-              console.log(" All updates complete!");
+              console.log(" All project items updated successfully!");
             } catch (err) {
-              console.error("Error during execution:", err);
+              console.error(" Error during execution:", err);
               process.exit(1);
             }
           })();
